@@ -3,15 +3,23 @@ import sqlite3
 from datetime import datetime, timezone
 
 from flask import (
-    Flask, request, redirect, url_for,
-    render_template, render_template_string, flash
+    Flask,
+    request,
+    redirect,
+    url_for,
+    render_template,
+    render_template_string,
+    flash,
 )
 from flask_login import (
-    LoginManager, UserMixin, login_user,
-    login_required, logout_user, current_user
+    LoginManager,
+    UserMixin,
+    login_user,
+    login_required,
+    logout_user,
+    current_user,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
 try:
@@ -55,7 +63,7 @@ def get_db():
 def table_exists(conn, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,)
+        (table_name,),
     ).fetchone()
     return row is not None
 
@@ -89,7 +97,8 @@ def init_db():
     cur = conn.cursor()
 
     # USERS
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
@@ -97,25 +106,29 @@ def init_db():
             password TEXT,
             business_name TEXT,
             phone TEXT,
+            twilio_number TEXT,
             greeting TEXT,
             faqs TEXT,
             created_at_utc TEXT
         )
-    """)
+        """
+    )
 
-    # Ensure columns exist even if DB was created with a different schema
+    # Ensure columns exist even if DB schema is older
     ensure_column(conn, "users", "username", "TEXT")
     ensure_column(conn, "users", "password_hash", "TEXT")
     ensure_column(conn, "users", "password", "TEXT")  # legacy fallback
     ensure_column(conn, "users", "business_name", "TEXT")
     ensure_column(conn, "users", "phone", "TEXT")
+    ensure_column(conn, "users", "twilio_number", "TEXT")  # used for To-number mapping
     ensure_column(conn, "users", "greeting", "TEXT")
     ensure_column(conn, "users", "faqs", "TEXT")
     ensure_column(conn, "users", "created_at_utc", "TEXT")
     try_create_unique_index(conn, "idx_users_username_unique", "users", "username")
 
     # CALL LOGS
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS call_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             call_sid TEXT,
@@ -125,7 +138,8 @@ def init_db():
             speech TEXT,
             reply TEXT
         )
-    """)
+        """
+    )
     ensure_column(conn, "call_logs", "call_sid", "TEXT")
     ensure_column(conn, "call_logs", "from_number", "TEXT")
     ensure_column(conn, "call_logs", "to_number", "TEXT")
@@ -217,36 +231,67 @@ Write the next receptionist line (max 2 sentences).
         return "Sorry—there was a problem on our side. Please leave your name and what you’re calling about."
 
 
-def get_default_business_config():
+# =========================================================
+# Multi-tenant mapping (To-number -> business)
+# =========================================================
+def normalize_phone(s: str) -> str:
+    return (s or "").replace(" ", "").strip()
+
+
+def get_business_config_for_to_number(to_number: str):
     """
-    MVP: uses the FIRST user in the DB as the “business”.
-    Later: map To-number -> correct user/business.
+    Find the correct business by the Twilio number the caller dialed (To).
+    If not found, fall back to first user.
     """
+    to_number = normalize_phone(to_number)
+
     conn = get_db()
-    row = conn.execute("""
-        SELECT business_name, greeting, faqs
-        FROM users
-        ORDER BY id ASC
-        LIMIT 1
-    """).fetchone()
+    row = None
+
+    if to_number:
+        row = conn.execute(
+            """
+            SELECT business_name, greeting, faqs
+            FROM users
+            WHERE REPLACE(twilio_number, ' ', '') = REPLACE(?, ' ', '')
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (to_number,),
+        ).fetchone()
+
+    if not row:
+        row = conn.execute(
+            """
+            SELECT business_name, greeting, faqs
+            FROM users
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
     conn.close()
 
     if row:
         return (
             (row["business_name"] or "Caltora"),
             (row["greeting"] or "Thanks for calling. How can I help?"),
-            (row["faqs"] or "")
+            (row["faqs"] or ""),
         )
+
     return ("Caltora", "Thanks for calling. How can I help?", "")
 
 
 def log_call(call_sid: str, from_number: str, to_number: str, speech: str, reply: str):
     try:
         conn = get_db()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO call_logs (call_sid, from_number, to_number, ts_utc, speech, reply)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (call_sid, from_number, to_number, utc_now_iso(), speech, reply))
+            """,
+            (call_sid, from_number, to_number, utc_now_iso(), speech, reply),
+        )
         conn.commit()
         conn.close()
     except Exception:
@@ -261,11 +306,13 @@ def home():
     try:
         return render_template("landing.html")
     except TemplateNotFound:
-        return render_template_string("""
+        return render_template_string(
+            """
         <h1>Caltora</h1>
         <p>AI receptionist for small businesses.</p>
         <p><a href="/register">Register</a> | <a href="/login">Login</a></p>
-        """)
+        """
+        )
 
 
 @app.route("/health")
@@ -295,6 +342,7 @@ def register():
         password = request.form.get("password") or ""
         business_name = (request.form.get("business_name") or "").strip()
         phone = (request.form.get("phone") or "").strip()
+        twilio_number = (request.form.get("twilio_number") or "").strip()
         greeting = (request.form.get("greeting") or "").strip()
         faqs = (request.form.get("faqs") or "").strip()
 
@@ -305,10 +353,13 @@ def register():
 
         conn = get_db()
         try:
-            conn.execute("""
-                INSERT INTO users (username, password_hash, business_name, phone, greeting, faqs, created_at_utc)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (username, pw_hash, business_name, phone, greeting, faqs, utc_now_iso()))
+            conn.execute(
+                """
+                INSERT INTO users (username, password_hash, business_name, phone, twilio_number, greeting, faqs, created_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (username, pw_hash, business_name, phone, twilio_number, greeting, faqs, utc_now_iso()),
+            )
             conn.commit()
         except sqlite3.IntegrityError:
             conn.close()
@@ -320,7 +371,8 @@ def register():
 
         return redirect(url_for("login"))
 
-    return render_template_string("""
+    return render_template_string(
+        """
     <h2>Register</h2>
     <form method="post">
       <label>Username</label><br><input name="username"><br><br>
@@ -328,6 +380,10 @@ def register():
 
       <label>Business Name (optional)</label><br><input name="business_name"><br><br>
       <label>Your Phone (optional)</label><br><input name="phone" placeholder="+966..."><br><br>
+
+      <label>Twilio Number (the number customers call) (optional)</label><br>
+      <input name="twilio_number" placeholder="+1..." /><br><br>
+
       <label>Greeting (optional)</label><br><input name="greeting" placeholder="Thanks for calling..."><br><br>
 
       <label>FAQs (optional)</label><br>
@@ -336,7 +392,8 @@ def register():
       <button type="submit">Create Account</button>
     </form>
     <p><a href="/login">Already have an account? Login</a></p>
-    """)
+    """
+    )
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -355,7 +412,8 @@ def login():
 
         return "Invalid credentials", 401
 
-    return render_template_string("""
+    return render_template_string(
+        """
     <h2>Login</h2>
     <form method="post">
       <label>Username</label><br><input name="username"><br><br>
@@ -363,32 +421,40 @@ def login():
       <button type="submit">Login</button>
     </form>
     <p><a href="/register">Create an account</a></p>
-    """)
+    """
+    )
 
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
     conn = get_db()
-    user_row = conn.execute("""
-        SELECT business_name, phone, greeting, faqs
+    user_row = conn.execute(
+        """
+        SELECT business_name, phone, twilio_number, greeting, faqs
         FROM users WHERE id = ?
-    """, (current_user.id,)).fetchone()
+        """,
+        (current_user.id,),
+    ).fetchone()
 
-    logs = conn.execute("""
-        SELECT ts_utc, from_number, speech, reply
+    logs = conn.execute(
+        """
+        SELECT ts_utc, from_number, to_number, speech, reply
         FROM call_logs
         ORDER BY id DESC
         LIMIT 25
-    """).fetchall()
+        """
+    ).fetchall()
     conn.close()
 
     business_name = user_row["business_name"] if user_row else ""
     phone = user_row["phone"] if user_row else ""
+    twilio_number = user_row["twilio_number"] if user_row else ""
     greeting = user_row["greeting"] if user_row else ""
     faqs = user_row["faqs"] if user_row else ""
 
-    return render_template_string("""
+    return render_template_string(
+        """
     <!doctype html>
     <html>
     <head>
@@ -414,7 +480,10 @@ def dashboard():
         <input name="business_name" value="{{ business_name }}" style="width:100%; padding:10px;"><br><br>
 
         <label>Your Phone</label><br>
-        <input name="phone" value="{{ phone }}" style="width:100%; padding:10px;"><br><br>
+        <input name="phone" value="{{ phone }}" style="width:100%; padding:10px;" placeholder="+966..."><br><br>
+
+        <label>Twilio Number (the number customers call)</label><br>
+        <input name="twilio_number" value="{{ twilio_number }}" style="width:100%; padding:10px;" placeholder="+1..."><br><br>
 
         <label>Greeting</label><br>
         <input name="greeting" value="{{ greeting }}" style="width:100%; padding:10px;"><br><br>
@@ -431,6 +500,7 @@ def dashboard():
           <div style="padding:10px;border:1px solid #ddd;border-radius:6px;margin:10px 0;">
             <div><b>Time:</b> {{ r.ts_utc }}</div>
             <div><b>From:</b> {{ r.from_number }}</div>
+            <div><b>To:</b> {{ r.to_number }}</div>
             <div><b>Caller:</b> {{ r.speech }}</div>
             <div><b>BizBot:</b> {{ r.reply }}</div>
           </div>
@@ -440,8 +510,15 @@ def dashboard():
       {% endif %}
     </body>
     </html>
-    """, username=current_user.username, business_name=business_name or "", phone=phone or "",
-       greeting=greeting or "", faqs=faqs or "", logs=logs)
+    """,
+        username=current_user.username,
+        business_name=business_name or "",
+        phone=phone or "",
+        twilio_number=twilio_number or "",
+        greeting=greeting or "",
+        faqs=faqs or "",
+        logs=logs,
+    )
 
 
 @app.route("/update-settings", methods=["POST"])
@@ -449,15 +526,19 @@ def dashboard():
 def update_settings():
     business_name = (request.form.get("business_name") or "").strip()
     phone = (request.form.get("phone") or "").strip()
+    twilio_number = (request.form.get("twilio_number") or "").strip()
     greeting = (request.form.get("greeting") or "").strip()
     faqs = (request.form.get("faqs") or "").strip()
 
     conn = get_db()
-    conn.execute("""
+    conn.execute(
+        """
         UPDATE users
-        SET business_name=?, phone=?, greeting=?, faqs=?
+        SET business_name=?, phone=?, twilio_number=?, greeting=?, faqs=?
         WHERE id=?
-    """, (business_name, phone, greeting, faqs, current_user.id))
+        """,
+        (business_name, phone, twilio_number, greeting, faqs, current_user.id),
+    )
     conn.commit()
     conn.close()
 
@@ -473,11 +554,12 @@ def logout():
 
 
 # =========================================================
-# Twilio Voice Webhooks (kept for later)
+# Twilio Voice Webhooks
 # =========================================================
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
-    business_name, greeting, _faqs = get_default_business_config()
+    to_number = request.values.get("To", "")
+    business_name, greeting, _faqs = get_business_config_for_to_number(to_number)
 
     vr = VoiceResponse()
     vr.say(greeting or f"Thanks for calling {business_name}. How can I help?")
@@ -487,7 +569,7 @@ def voice():
         action="/handle-input",
         method="POST",
         speechTimeout="auto",
-        timeout=6
+        timeout=6,
     )
     gather.say("Please tell me what you need.")
     vr.append(gather)
@@ -503,7 +585,7 @@ def handle_input():
     to_number = request.values.get("To", "")
     speech = (request.values.get("SpeechResult") or "").strip()
 
-    business_name, greeting, faqs = get_default_business_config()
+    business_name, greeting, faqs = get_business_config_for_to_number(to_number)
 
     vr = VoiceResponse()
 
@@ -514,7 +596,7 @@ def handle_input():
             action="/handle-input",
             method="POST",
             speechTimeout="auto",
-            timeout=6
+            timeout=6,
         )
         gather.say("Go ahead.")
         vr.append(gather)
@@ -531,7 +613,7 @@ def handle_input():
         action="/handle-input",
         method="POST",
         speechTimeout="auto",
-        timeout=6
+        timeout=6,
     )
     gather.say("Anything else?")
     vr.append(gather)
