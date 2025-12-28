@@ -4,8 +4,14 @@ import sqlite3
 import traceback
 from datetime import datetime, timezone
 
-from flask import Flask, request, redirect, url_for, render_template, render_template_string
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask import (
+    Flask, request, redirect, url_for,
+    render_template, render_template_string
+)
+from flask_login import (
+    LoginManager, UserMixin,
+    login_user, login_required, logout_user, current_user
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -18,7 +24,7 @@ except Exception:
 
 
 # =========================================================
-# Config (Render env vars)
+# CONFIG (Render env vars)
 # =========================================================
 APP_NAME = os.getenv("APP_NAME", "Caltora BizBot")
 DB_PATH = os.getenv("DB_PATH", "database.db")
@@ -30,16 +36,20 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 
-# Safety switch: keep provisioning OFF until you’re ready
+# Gate to prevent accidental number purchases
 ALLOW_PROVISIONING = os.getenv("ALLOW_PROVISIONING", "0") == "1"
 
-# Beta constraints to protect you
-DEFAULT_COUNTRY = os.getenv("DEFAULT_COUNTRY", "US")
+# Beta constraints / guardrails
+DEFAULT_COUNTRY = os.getenv("DEFAULT_COUNTRY", "US").upper()
+ALLOWED_COUNTRIES = set((os.getenv("ALLOWED_COUNTRIES", "US").upper().replace(" ", "")).split(","))
 MAX_NUMBERS_PER_ACCOUNT = int(os.getenv("MAX_NUMBERS_PER_ACCOUNT", "1"))
+
+# Call safety caps (protect your Twilio bill)
+MAX_CALL_STEPS = int(os.getenv("MAX_CALL_STEPS", "8"))  # hard stop if loop occurs
 
 
 # =========================================================
-# App
+# APP
 # =========================================================
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -57,12 +67,31 @@ if OpenAI is not None and os.getenv("OPENAI_API_KEY"):
 
 
 # =========================================================
-# DB Helpers (safe migrations)
+# TIME/UTILS
+# =========================================================
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def safe_json(s: str, default):
+    try:
+        return json.loads(s) if s else default
+    except Exception:
+        return default
+
+def norm_phone(s: str) -> str:
+    return (s or "").replace(" ", "").strip()
+
+def require_https_base(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    if not url.startswith("https://"):
+        return url  # we don't block here; just keep it visible in dashboard
+    return url
+
+
+# =========================================================
+# DB HELPERS + STRONG MIGRATIONS
 # =========================================================
 _DB_READY = False
-
-def utc_now_iso():
-    return datetime.now(timezone.utc).isoformat()
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -92,9 +121,36 @@ def ensure_column(conn, table: str, col: str, col_type: str):
     if col not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
+def recreate_users_table_if_critical_missing(conn):
+    """
+    If users table exists but is missing critical columns from old/broken schemas,
+    we rename it and create a fresh users table.
+    """
+    if not table_exists(conn, "users"):
+        return
+    cols = table_columns(conn, "users")
+    critical = {"username", "password_hash"}
+    if not critical.issubset(cols):
+        # Rename the broken table
+        old_name = f"users_broken_{int(datetime.now().timestamp())}"
+        conn.execute(f"ALTER TABLE users RENAME TO {old_name}")
+
+def recreate_call_logs_if_critical_missing(conn):
+    if not table_exists(conn, "call_logs"):
+        return
+    cols = table_columns(conn, "call_logs")
+    critical = {"to_number", "from_number"}
+    if not critical.issubset(cols):
+        old_name = f"call_logs_broken_{int(datetime.now().timestamp())}"
+        conn.execute(f"ALTER TABLE call_logs RENAME TO {old_name}")
+
 def init_db():
     conn = get_db()
     cur = conn.cursor()
+
+    # Repair/normalize tables if past schema is incompatible
+    recreate_users_table_if_critical_missing(conn)
+    recreate_call_logs_if_critical_missing(conn)
 
     # USERS
     cur.execute(
@@ -111,13 +167,14 @@ def init_db():
 
             greeting TEXT,
             faqs TEXT,
-            mode TEXT,
-            capture_json TEXT,
-            is_onboarded INTEGER,
 
-            bizbot_number TEXT,          -- Twilio number we assign (unique per customer)
-            twilio_number_sid TEXT,      -- IncomingPhoneNumber SID
-            provision_status TEXT,       -- "none" | "active" | "failed"
+            mode TEXT,                 -- "message" (recommended beta) or "ai"
+            capture_json TEXT,         -- json dict of what to capture
+            is_onboarded INTEGER,      -- 0/1
+
+            bizbot_number TEXT,        -- Twilio number we assign (unique per customer)
+            twilio_number_sid TEXT,    -- IncomingPhoneNumber SID
+            provision_status TEXT,     -- "none" | "active" | "failed"
             provision_error TEXT,
             provisioned_at_utc TEXT,
 
@@ -127,7 +184,7 @@ def init_db():
         """
     )
 
-    # Safe adds
+    # Ensure all columns exist (safe upgrades)
     ensure_column(conn, "users", "username", "TEXT UNIQUE")
     ensure_column(conn, "users", "password_hash", "TEXT")
 
@@ -176,21 +233,24 @@ def init_db():
     ensure_column(conn, "call_logs", "transcript", "TEXT")
     ensure_column(conn, "call_logs", "bot_reply", "TEXT")
 
-    # CALL SESSIONS (multi-turn)
+    # CALL SESSIONS (multi-turn capture)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS call_sessions (
             call_sid TEXT PRIMARY KEY,
             user_id INTEGER,
             stage TEXT,
+            step_count INTEGER,
             data_json TEXT,
             created_at_utc TEXT,
             updated_at_utc TEXT
         )
         """
     )
+    ensure_column(conn, "call_sessions", "call_sid", "TEXT PRIMARY KEY")
     ensure_column(conn, "call_sessions", "user_id", "INTEGER")
     ensure_column(conn, "call_sessions", "stage", "TEXT")
+    ensure_column(conn, "call_sessions", "step_count", "INTEGER")
     ensure_column(conn, "call_sessions", "data_json", "TEXT")
     ensure_column(conn, "call_sessions", "created_at_utc", "TEXT")
     ensure_column(conn, "call_sessions", "updated_at_utc", "TEXT")
@@ -211,16 +271,12 @@ def _before_any_request():
 
 
 # =========================================================
-# Utilities
+# TWILIO + PROVISIONING
 # =========================================================
-def norm_phone(s: str) -> str:
-    return (s or "").replace(" ", "").strip()
-
-def safe_json(s: str, default):
-    try:
-        return json.loads(s) if s else default
-    except Exception:
-        return default
+def twilio_client():
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        raise RuntimeError("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN in environment variables.")
+    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 def template_greeting(business_name: str, business_type: str):
     bn = business_name or "our business"
@@ -243,27 +299,16 @@ def template_faqs(business_type: str):
         return "Hours:\nLocation:\nServices:\nDrop-off/Pickup:\nPricing:\n"
     return "Hours:\nLocation:\nServices:\nBooking:\nPricing:\n"
 
-
-# =========================================================
-# Twilio
-# =========================================================
-def twilio_client():
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        raise RuntimeError("Missing TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN")
-    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
 def can_provision_for_user(user_row):
-    # Hard guardrails
     if not ALLOW_PROVISIONING:
-        return (False, "Provisioning is disabled on the server (ALLOW_PROVISIONING=0).")
-    # Limit: 1 number per customer by default
+        return (False, "Provisioning disabled: set ALLOW_PROVISIONING=1 in Render Environment.")
     if user_row["bizbot_number"]:
-        return (False, "You already have an active BizBot number.")
+        return (False, "This account already has an active BizBot number.")
     return (True, "")
 
 
 # =========================================================
-# Call session + logging
+# SESSIONS + LOGGING
 # =========================================================
 def get_or_create_session(call_sid: str, user_id: int):
     conn = get_db()
@@ -274,33 +319,36 @@ def get_or_create_session(call_sid: str, user_id: int):
     now = utc_now_iso()
     conn.execute(
         """
-        INSERT INTO call_sessions (call_sid, user_id, stage, data_json, created_at_utc, updated_at_utc)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO call_sessions (call_sid, user_id, stage, step_count, data_json, created_at_utc, updated_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (call_sid, user_id, "root", json.dumps({}), now, now),
+        (call_sid, user_id, "root", 0, json.dumps({}), now, now),
     )
     conn.commit()
     row2 = conn.execute("SELECT * FROM call_sessions WHERE call_sid=?", (call_sid,)).fetchone()
     conn.close()
     return row2
 
-def update_session(call_sid: str, stage: str = None, data: dict = None):
+def update_session(call_sid: str, stage: str = None, data: dict = None, bump_step: bool = True):
     conn = get_db()
     row = conn.execute("SELECT * FROM call_sessions WHERE call_sid=?", (call_sid,)).fetchone()
     if not row:
         conn.close()
         return
     existing = safe_json(row["data_json"], {})
-    if data:
+    if isinstance(data, dict):
         existing.update(data)
+
     new_stage = stage if stage is not None else row["stage"]
+    step_count = int(row["step_count"] or 0) + (1 if bump_step else 0)
+
     conn.execute(
         """
         UPDATE call_sessions
-        SET stage=?, data_json=?, updated_at_utc=?
+        SET stage=?, step_count=?, data_json=?, updated_at_utc=?
         WHERE call_sid=?
         """,
-        (new_stage, json.dumps(existing), utc_now_iso(), call_sid),
+        (new_stage, step_count, json.dumps(existing), utc_now_iso(), call_sid),
     )
     conn.commit()
     conn.close()
@@ -319,7 +367,7 @@ def log_call(user_id: int, call_sid: str, to_number: str, from_number: str, stag
 
 
 # =========================================================
-# AI (optional)
+# OPTIONAL AI
 # =========================================================
 def ai_reply(business_name: str, faqs: str, caller_text: str):
     if openai_client is None:
@@ -329,7 +377,7 @@ You are BizBot, a phone receptionist for {business_name}.
 Rules:
 - Max 2 sentences.
 - If unsure: ask one question or take a message.
-- Use FAQ if relevant. Do not invent facts.
+- Use the FAQ if relevant. Do not invent facts.
 - Never mention AI/OpenAI.
 """
     user_msg = f"FAQ:\n{faqs}\n\nCaller said:\n{caller_text}\n\nWrite ONLY the next receptionist line."
@@ -348,7 +396,7 @@ Rules:
 
 
 # =========================================================
-# Auth
+# AUTH
 # =========================================================
 class User(UserMixin):
     def __init__(self, user_id, username):
@@ -366,7 +414,7 @@ def load_user(user_id):
 
 
 # =========================================================
-# Errors
+# ERRORS
 # =========================================================
 @app.errorhandler(500)
 def _err_500(e):
@@ -376,11 +424,14 @@ def _err_500(e):
 
 
 # =========================================================
-# Landing
+# ROUTES (LANDING/HEALTH)
 # =========================================================
+@app.route("/health")
+def health():
+    return {"ok": True, "app": APP_NAME, "time_utc": utc_now_iso()}
+
 @app.route("/")
 def home():
-    # Uses your templates/landing.html if present
     try:
         return render_template("landing.html")
     except Exception:
@@ -391,7 +442,7 @@ def home():
 
 
 # =========================================================
-# Register/Login
+# REGISTER/LOGIN/LOGOUT
 # =========================================================
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -405,14 +456,23 @@ def register():
         try:
             conn.execute(
                 """
-                INSERT INTO users (username, password_hash, mode, capture_json, is_onboarded, provision_status, created_at_utc)
+                INSERT INTO users (
+                    username, password_hash,
+                    mode, capture_json, is_onboarded,
+                    provision_status, created_at_utc
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
                     generate_password_hash(password),
                     "message",
-                    json.dumps({"collect_reason": True, "collect_name": True, "collect_callback": True, "collect_preferred_time": True}),
+                    json.dumps({
+                        "collect_reason": True,
+                        "collect_name": True,
+                        "collect_callback": True,
+                        "collect_preferred_time": True
+                    }),
                     0,
                     "none",
                     utc_now_iso()
@@ -472,15 +532,11 @@ def logout():
 
 
 # =========================================================
-# Onboarding (simple, then they can provision number)
+# ONBOARDING
 # =========================================================
 @app.route("/onboarding", methods=["GET", "POST"])
 @login_required
 def onboarding():
-    conn = get_db()
-    user = conn.execute("SELECT * FROM users WHERE id=?", (current_user.id,)).fetchone()
-    conn.close()
-
     if request.method == "POST":
         business_name = (request.form.get("business_name") or "").strip()
         business_type = (request.form.get("business_type") or "").strip()
@@ -494,7 +550,8 @@ def onboarding():
         conn.execute(
             """
             UPDATE users
-            SET business_name=?, business_type=?, timezone=?, notify_email=?, greeting=?, faqs=?, is_onboarded=?
+            SET business_name=?, business_type=?, timezone=?, notify_email=?,
+                greeting=?, faqs=?, is_onboarded=?
             WHERE id=?
             """,
             (business_name, business_type, timezone_val, notify_email, greeting, faqs, 1, current_user.id),
@@ -526,13 +583,12 @@ def onboarding():
           Notification email (optional)<br><input name="notify_email" style="width:360px;"><br><br>
           <button type="submit">Finish</button>
         </form>
-        """,
-        user=user
+        """
     )
 
 
 # =========================================================
-# Dashboard + “Activate BizBot Number”
+# DASHBOARD + PROVISION BUTTON + SETTINGS
 # =========================================================
 @app.route("/dashboard")
 @login_required
@@ -553,7 +609,7 @@ def dashboard():
         return redirect(url_for("logout"))
 
     connected = bool(user["last_voice_utc"])
-    webhook_voice = f"{PUBLIC_BASE_URL}/voice"
+    base_url = require_https_base(PUBLIC_BASE_URL)
     provisioning_enabled = "YES" if ALLOW_PROVISIONING else "NO"
 
     return render_template_string(
@@ -562,6 +618,7 @@ def dashboard():
         <p>Logged in as <b>{{u.username}}</b> | <a href="/logout">Logout</a></p>
 
         <h3>Status</h3>
+        <p><b>PUBLIC_BASE_URL:</b> <code>{{base_url}}</code></p>
         {% if u.bizbot_number %}
           <p><b>Your BizBot Number:</b> {{u.bizbot_number}}</p>
           {% if connected %}
@@ -573,23 +630,35 @@ def dashboard():
           <p>❌ No BizBot number yet.</p>
         {% endif %}
 
-        <h3>One-click setup (Twilio inside Caltora)</h3>
-        <p><b>Provisioning enabled on server:</b> {{provisioning_enabled}}</p>
+        <hr>
+
+        <h3>One-click number activation (Twilio inside Caltora)</h3>
+        <p><b>Provisioning enabled:</b> {{provisioning_enabled}}</p>
+
         {% if not u.bizbot_number %}
           <form method="post" action="/provision-number">
             Country (beta recommended: US)<br>
-            <input name="country" value="US" style="width:120px;"><br><br>
+            <input name="country" value="{{default_country}}" style="width:120px;"><br><br>
             Area code (optional, US only)<br>
             <input name="area_code" placeholder="e.g., 212" style="width:120px;"><br><br>
             <button type="submit">Activate BizBot Number</button>
           </form>
+
           {% if u.provision_status == "failed" %}
             <p style="color:#b00;"><b>Provision failed:</b> {{u.provision_error}}</p>
           {% endif %}
         {% endif %}
 
-        <h3>Call handling mode</h3>
-        <p><b>Mode:</b> {{u.mode}} (message mode is safest for beta)</p>
+        <hr>
+
+        <h3>Call Mode</h3>
+        <form method="post" action="/set-mode">
+          <select name="mode">
+            <option value="message" {% if u.mode=="message" %}selected{% endif %}>Message Capture (recommended beta)</option>
+            <option value="ai" {% if u.mode=="ai" %}selected{% endif %}>AI Mode (optional)</option>
+          </select>
+          <button type="submit">Save</button>
+        </form>
 
         <h3>Recent calls</h3>
         {% if logs %}
@@ -607,12 +676,25 @@ def dashboard():
         """,
         u=user,
         logs=logs,
-        connected=connected,
-        webhook_voice=webhook_voice,
-        provisioning_enabled=provisioning_enabled
+        base_url=base_url,
+        provisioning_enabled=provisioning_enabled,
+        default_country=DEFAULT_COUNTRY
     )
 
-
+@app.route("/set-mode", methods=["POST"])
+@login_required
+def set_mode():
+    mode = (request.form.get("mode") or "message").strip().lower()
+    if mode not in ("message", "ai"):
+        mode = "message"
+    conn = get_db()
+    conn.execute("UPDATE users SET mode=? WHERE id=?", (mode, current_user.id))
+    conn.commit()
+    conn.close()
+    return redirect(url_for("dashboard"))
+# =========================================================
+# PROVISION NUMBER (TWILIO INSIDE PRODUCT)
+# =========================================================
 @app.route("/provision-number", methods=["POST"])
 @login_required
 def provision_number():
@@ -632,11 +714,20 @@ def provision_number():
     country = (request.form.get("country") or DEFAULT_COUNTRY).strip().upper()
     area_code = (request.form.get("area_code") or "").strip()
 
+    if country not in ALLOWED_COUNTRIES:
+        conn.execute(
+            "UPDATE users SET provision_status=?, provision_error=? WHERE id=?",
+            ("failed", f"Country not allowed in beta. Allowed: {', '.join(sorted(ALLOWED_COUNTRIES))}", current_user.id)
+        )
+        conn.commit()
+        conn.close()
+        return redirect(url_for("dashboard"))
+
     try:
         client = twilio_client()
 
-        # Find available numbers (beta: start with US)
-        available = None
+        # Search available numbers
+        available = []
         if country == "US" and area_code:
             available = client.available_phone_numbers("US").local.list(area_code=area_code, limit=1)
         else:
@@ -653,18 +744,22 @@ def provision_number():
             friendly_name=f"Caltora BizBot user {current_user.id}",
         )
 
-        # Configure webhook
+        # Configure webhooks
+        voice_url = f"{require_https_base(PUBLIC_BASE_URL)}/voice"
+        status_url = f"{require_https_base(PUBLIC_BASE_URL)}/status"
+
         client.incoming_phone_numbers(incoming.sid).update(
-            voice_url=f"{PUBLIC_BASE_URL}/voice",
+            voice_url=voice_url,
             voice_method="POST",
-            status_callback=f"{PUBLIC_BASE_URL}/status",
+            status_callback=status_url,
             status_callback_method="POST",
         )
 
         conn.execute(
             """
             UPDATE users
-            SET bizbot_number=?, twilio_number_sid=?, provision_status=?, provision_error=?, provisioned_at_utc=?
+            SET bizbot_number=?, twilio_number_sid=?, provision_status=?,
+                provision_error=?, provisioned_at_utc=?
             WHERE id=?
             """,
             (phone_number, incoming.sid, "active", "", utc_now_iso(), current_user.id)
@@ -675,19 +770,21 @@ def provision_number():
 
     except Exception as e:
         err = str(e)
-        conn.execute(
-            "UPDATE users SET provision_status=?, provision_error=? WHERE id=?",
-            ("failed", err, current_user.id)
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "UPDATE users SET provision_status=?, provision_error=? WHERE id=?",
+                ("failed", err, current_user.id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
         print("Provision error:", err)
         traceback.print_exc()
         return redirect(url_for("dashboard"))
 
 
 # =========================================================
-# Tenant resolution by To number (bizbot_number)
+# TENANT RESOLUTION (incoming call -> correct business)
 # =========================================================
 def find_user_by_to_number(to_number: str):
     to_number = norm_phone(to_number)
@@ -705,7 +802,7 @@ def find_user_by_to_number(to_number: str):
 
 
 # =========================================================
-# Twilio webhooks
+# TWILIO WEBHOOKS
 # =========================================================
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
@@ -713,10 +810,9 @@ def voice():
     from_number = request.values.get("From", "")
     to_number = request.values.get("To", "")
 
-    user = find_user_by_to_number(to_number)
-
     vr = VoiceResponse()
 
+    user = find_user_by_to_number(to_number)
     if not user:
         vr.say("This number is not linked to a business yet. Please call back later.")
         vr.hangup()
@@ -728,12 +824,23 @@ def voice():
     conn.commit()
     conn.close()
 
-    get_or_create_session(call_sid, user["id"])
+    sess = get_or_create_session(call_sid, user["id"])
+    # hard stop guard
+    if int(sess["step_count"] or 0) > MAX_CALL_STEPS:
+        vr.say("Sorry, something went wrong. Please call back later.")
+        vr.hangup()
+        return str(vr)
 
     greeting = user["greeting"] or template_greeting(user["business_name"], user["business_type"])
     vr.say(greeting)
 
-    gather = Gather(input="speech", action="/handle-input", method="POST", speechTimeout="auto", timeout=7)
+    gather = Gather(
+        input="speech",
+        action="/handle-input",
+        method="POST",
+        speechTimeout="auto",
+        timeout=7
+    )
     gather.say("Please tell me what you need.")
     vr.append(gather)
 
@@ -749,8 +856,8 @@ def handle_input():
     to_number = request.values.get("To", "")
     speech = (request.values.get("SpeechResult") or "").strip()
 
-    user = find_user_by_to_number(to_number)
     vr = VoiceResponse()
+    user = find_user_by_to_number(to_number)
 
     if not user:
         vr.say("This number is not linked to a business yet.")
@@ -758,23 +865,48 @@ def handle_input():
         return str(vr)
 
     sess = get_or_create_session(call_sid, user["id"])
-    stage = sess["stage"] or "root"
-    data = safe_json(sess["data_json"], {})
-    capture = safe_json(user["capture_json"], {"collect_reason": True, "collect_name": True, "collect_callback": True, "collect_preferred_time": True})
+    stage = (sess["stage"] or "root").strip()
+    step_count = int(sess["step_count"] or 0)
 
-    # Default: message capture mode (stable beta)
+    if step_count > MAX_CALL_STEPS:
+        vr.say("Sorry, something went wrong. Please call back later.")
+        vr.hangup()
+        return str(vr)
+
+    data = safe_json(sess["data_json"], {})
+    capture = safe_json(user["capture_json"], {
+        "collect_reason": True,
+        "collect_name": True,
+        "collect_callback": True,
+        "collect_preferred_time": True
+    })
+
     mode = (user["mode"] or "message").strip().lower()
+
+    # If Twilio didn’t return speech, retry once
+    if not speech:
+        bot = "Sorry, I didn’t catch that. Please repeat."
+        log_call(user["id"], call_sid, to_number, from_number, stage, "", bot)
+        gather = Gather(input="speech", action="/handle-input", method="POST", speechTimeout="auto", timeout=7)
+        gather.say(bot)
+        vr.append(gather)
+        vr.say("Goodbye.")
+        return str(vr)
+
+    # =======================
+    # MESSAGE CAPTURE MODE
+    # =======================
     if mode == "message":
         if stage == "root":
             data["reason"] = speech
-            update_session(call_sid, "ask_name", data)
+            update_session(call_sid, stage="ask_name", data=data)
             bot = "Thanks. What’s your name?"
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
             vr.say(bot)
 
         elif stage == "ask_name":
             data["name"] = speech
-            update_session(call_sid, "ask_callback", data)
+            update_session(call_sid, stage="ask_callback", data=data)
             bot = "Thanks. What’s the best callback number?"
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
             vr.say(bot)
@@ -782,12 +914,12 @@ def handle_input():
         elif stage == "ask_callback":
             data["callback"] = speech
             if capture.get("collect_preferred_time", True):
-                update_session(call_sid, "ask_time", data)
+                update_session(call_sid, stage="ask_time", data=data)
                 bot = "Got it. What’s a good time to call you back?"
                 log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
                 vr.say(bot)
             else:
-                update_session(call_sid, "done", data)
+                update_session(call_sid, stage="done", data=data)
                 bot = "Perfect. We’ll get back to you soon. Goodbye."
                 log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
                 vr.say(bot)
@@ -796,7 +928,7 @@ def handle_input():
 
         elif stage == "ask_time":
             data["preferred_time"] = speech
-            update_session(call_sid, "done", data)
+            update_session(call_sid, stage="done", data=data)
             bot = "Perfect. We’ll get back to you soon. Goodbye."
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
             vr.say(bot)
@@ -816,8 +948,11 @@ def handle_input():
         vr.say("Goodbye.")
         return str(vr)
 
-    # AI Mode (optional)
+    # =======================
+    # AI MODE (OPTIONAL)
+    # =======================
     bot = ai_reply(user["business_name"] or APP_NAME, user["faqs"] or "", speech)
+    update_session(call_sid, stage="ai", data={"last_user": speech})
     log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
     vr.say(bot)
 
@@ -832,7 +967,6 @@ def handle_input():
 
 @app.route("/status", methods=["POST"])
 def status():
-    # Helpful for debugging in Render logs
     call_sid = request.values.get("CallSid", "")
     call_status = request.values.get("CallStatus", "")
     to_number = request.values.get("To", "")
@@ -841,6 +975,9 @@ def status():
     return ("", 204)
 
 
+# =========================================================
+# LOCAL RUN
+# =========================================================
 if __name__ == "__main__":
     init_db()
     app.run(debug=True)
