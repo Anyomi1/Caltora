@@ -26,15 +26,15 @@ except Exception:
 # =========================================================
 # CONFIG (Render env vars)
 # =========================================================
-APP_NAME = os.getenv("APP_NAME", "Caltora BizBot")
+APP_NAME = os.getenv("APP_NAME", "Optenor BizBot")
 DB_PATH = os.getenv("DB_PATH", "database.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-me")
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://caltora.onrender.com")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()  # MUST be https://...
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 
 # Gate to prevent accidental number purchases
 ALLOW_PROVISIONING = os.getenv("ALLOW_PROVISIONING", "0") == "1"
@@ -81,11 +81,25 @@ def safe_json(s: str, default):
 def norm_phone(s: str) -> str:
     return (s or "").replace(" ", "").strip()
 
-def require_https_base(url: str) -> str:
-    url = (url or "").strip().rstrip("/")
-    if not url.startswith("https://"):
-        return url  # we don't block here; just keep it visible in dashboard
-    return url
+def base_url() -> str:
+    """
+    Clean base URL (no trailing slash). For Twilio we strongly prefer https.
+    """
+    u = (PUBLIC_BASE_URL or "").strip().rstrip("/")
+    return u
+
+def absolute_url(path: str) -> str:
+    """
+    Build absolute URL for Twilio callbacks.
+    If PUBLIC_BASE_URL is missing, we fall back to relative paths, but that is less reliable.
+    """
+    p = (path or "").strip()
+    if not p.startswith("/"):
+        p = "/" + p
+    bu = base_url()
+    if not bu:
+        return p
+    return bu + p
 
 
 # =========================================================
@@ -121,6 +135,13 @@ def ensure_column(conn, table: str, col: str, col_type: str):
     if col not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
+def ensure_index(conn, index_sql: str):
+    try:
+        conn.execute(index_sql)
+    except Exception:
+        # If already exists or sqlite limitation, ignore
+        pass
+
 def recreate_users_table_if_critical_missing(conn):
     """
     If users table exists but is missing critical columns from old/broken schemas,
@@ -131,7 +152,6 @@ def recreate_users_table_if_critical_missing(conn):
     cols = table_columns(conn, "users")
     critical = {"username", "password_hash"}
     if not critical.issubset(cols):
-        # Rename the broken table
         old_name = f"users_broken_{int(datetime.now().timestamp())}"
         conn.execute(f"ALTER TABLE users RENAME TO {old_name}")
 
@@ -157,7 +177,7 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
+            username TEXT,
             password_hash TEXT,
 
             business_name TEXT,
@@ -185,7 +205,7 @@ def init_db():
     )
 
     # Ensure all columns exist (safe upgrades)
-    ensure_column(conn, "users", "username", "TEXT UNIQUE")
+    ensure_column(conn, "users", "username", "TEXT")
     ensure_column(conn, "users", "password_hash", "TEXT")
 
     ensure_column(conn, "users", "business_name", "TEXT")
@@ -207,6 +227,11 @@ def init_db():
 
     ensure_column(conn, "users", "last_voice_utc", "TEXT")
     ensure_column(conn, "users", "created_at_utc", "TEXT")
+
+    # Unique index for username (safer than ALTER TABLE UNIQUE)
+    ensure_index(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username);")
+    # Helpful indexes
+    ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_users_bizbot_number ON users(bizbot_number);")
 
     # CALL LOGS
     cur.execute(
@@ -233,6 +258,9 @@ def init_db():
     ensure_column(conn, "call_logs", "transcript", "TEXT")
     ensure_column(conn, "call_logs", "bot_reply", "TEXT")
 
+    ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_call_logs_user_id ON call_logs(user_id);")
+    ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_call_logs_call_sid ON call_logs(call_sid);")
+
     # CALL SESSIONS (multi-turn capture)
     cur.execute(
         """
@@ -247,13 +275,14 @@ def init_db():
         )
         """
     )
-    ensure_column(conn, "call_sessions", "call_sid", "TEXT PRIMARY KEY")
+    ensure_column(conn, "call_sessions", "call_sid", "TEXT")
     ensure_column(conn, "call_sessions", "user_id", "INTEGER")
     ensure_column(conn, "call_sessions", "stage", "TEXT")
     ensure_column(conn, "call_sessions", "step_count", "INTEGER")
     ensure_column(conn, "call_sessions", "data_json", "TEXT")
     ensure_column(conn, "call_sessions", "created_at_utc", "TEXT")
     ensure_column(conn, "call_sessions", "updated_at_utc", "TEXT")
+    ensure_index(conn, "CREATE INDEX IF NOT EXISTS idx_call_sessions_user_id ON call_sessions(user_id);")
 
     conn.commit()
     conn.close()
@@ -353,6 +382,12 @@ def update_session(call_sid: str, stage: str = None, data: dict = None, bump_ste
     conn.commit()
     conn.close()
 
+def delete_session(call_sid: str):
+    conn = get_db()
+    conn.execute("DELETE FROM call_sessions WHERE call_sid=?", (call_sid,))
+    conn.commit()
+    conn.close()
+
 def log_call(user_id: int, call_sid: str, to_number: str, from_number: str, stage: str, transcript: str, bot_reply: str):
     conn = get_db()
     conn.execute(
@@ -440,6 +475,24 @@ def home():
             name=APP_NAME,
         )
 
+@app.route("/terms")
+def terms():
+    return render_template_string("""
+    <h2>Terms</h2>
+    <p>Optenor BizBot is provided on an early-access basis.</p>
+    <p>You are responsible for complying with applicable laws, including any call recording, consent, and disclosure requirements in your jurisdiction.</p>
+    <p>Service features may change during beta.</p>
+    """)
+
+@app.route("/privacy")
+def privacy():
+    return render_template_string("""
+    <h2>Privacy</h2>
+    <p>We store account details and call metadata to provide the service (e.g., phone numbers, message content, timestamps, and configuration).</p>
+    <p>We do not sell your data.</p>
+    <p>Contact support to request deletion.</p>
+    """)
+
 
 # =========================================================
 # REGISTER/LOGIN/LOGOUT
@@ -451,6 +504,8 @@ def register():
         password = request.form.get("password") or ""
         if not username or not password:
             return "Username and password required", 400
+        if len(password) < 8:
+            return "Password must be at least 8 characters.", 400
 
         conn = get_db()
         try:
@@ -490,7 +545,7 @@ def register():
         <h2>Create account</h2>
         <form method="post">
           Username<br><input name="username"><br><br>
-          Password<br><input name="password" type="password"><br><br>
+          Password (min 8 chars)<br><input name="password" type="password"><br><br>
           <button type="submit">Continue</button>
         </form>
         <p><a href="/login">Login</a></p>
@@ -543,6 +598,11 @@ def onboarding():
         timezone_val = (request.form.get("timezone") or "").strip()
         notify_email = (request.form.get("notify_email") or "").strip()
 
+        if not business_name:
+            return "Business name is required", 400
+        if not notify_email:
+            return "Notification email is required (so you receive captured calls).", 400
+
         greeting = template_greeting(business_name, business_type)
         faqs = template_faqs(business_type)
 
@@ -580,7 +640,7 @@ def onboarding():
             <option value="America/New_York">America/New_York</option>
             <option value="Europe/London">Europe/London</option>
           </select><br><br>
-          Notification email (optional)<br><input name="notify_email" style="width:360px;"><br><br>
+          Notification email (required)<br><input name="notify_email" style="width:360px;"><br><br>
           <button type="submit">Finish</button>
         </form>
         """
@@ -588,7 +648,7 @@ def onboarding():
 
 
 # =========================================================
-# DASHBOARD + PROVISION BUTTON + SETTINGS
+# DASHBOARD + INBOX + SETTINGS
 # =========================================================
 @app.route("/dashboard")
 @login_required
@@ -599,7 +659,7 @@ def dashboard():
         """
         SELECT ts_utc, from_number, to_number, transcript, bot_reply
         FROM call_logs WHERE user_id=?
-        ORDER BY id DESC LIMIT 25
+        ORDER BY id DESC LIMIT 15
         """,
         (current_user.id,),
     ).fetchall()
@@ -609,16 +669,18 @@ def dashboard():
         return redirect(url_for("logout"))
 
     connected = bool(user["last_voice_utc"])
-    base_url = require_https_base(PUBLIC_BASE_URL)
     provisioning_enabled = "YES" if ALLOW_PROVISIONING else "NO"
+    bu = base_url() or "(not set)"
 
     return render_template_string(
         """
         <h2>Dashboard</h2>
         <p>Logged in as <b>{{u.username}}</b> | <a href="/logout">Logout</a></p>
+        <p><a href="/inbox">Open Inbox</a> | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a></p>
 
         <h3>Status</h3>
-        <p><b>PUBLIC_BASE_URL:</b> <code>{{base_url}}</code></p>
+        <p><b>PUBLIC_BASE_URL:</b> <code>{{bu}}</code></p>
+
         {% if u.bizbot_number %}
           <p><b>Your BizBot Number:</b> {{u.bizbot_number}}</p>
           {% if connected %}
@@ -632,7 +694,7 @@ def dashboard():
 
         <hr>
 
-        <h3>One-click number activation (Twilio inside Caltora)</h3>
+        <h3>One-click number activation (Twilio inside Optenor)</h3>
         <p><b>Provisioning enabled:</b> {{provisioning_enabled}}</p>
 
         {% if not u.bizbot_number %}
@@ -676,9 +738,46 @@ def dashboard():
         """,
         u=user,
         logs=logs,
-        base_url=base_url,
+        bu=bu,
         provisioning_enabled=provisioning_enabled,
         default_country=DEFAULT_COUNTRY
+    )
+
+@app.route("/inbox")
+@login_required
+def inbox():
+    conn = get_db()
+    logs = conn.execute(
+        """
+        SELECT ts_utc, from_number, to_number, stage, transcript, bot_reply
+        FROM call_logs
+        WHERE user_id=?
+        ORDER BY id DESC
+        LIMIT 200
+        """,
+        (current_user.id,),
+    ).fetchall()
+    conn.close()
+
+    return render_template_string(
+        """
+        <h2>Inbox</h2>
+        <p><a href="/dashboard">Back to dashboard</a></p>
+        {% if logs %}
+          {% for r in logs %}
+            <div style="border:1px solid #ddd; padding:10px; margin:10px 0;">
+              <div><b>Time:</b> {{r.ts_utc}}</div>
+              <div><b>Stage:</b> {{r.stage}}</div>
+              <div><b>From:</b> {{r.from_number}} <b>To:</b> {{r.to_number}}</div>
+              <div><b>Caller:</b> {{r.transcript}}</div>
+              <div><b>BizBot:</b> {{r.bot_reply}}</div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p>No leads yet.</p>
+        {% endif %}
+        """,
+        logs=logs,
     )
 
 @app.route("/set-mode", methods=["POST"])
@@ -692,6 +791,8 @@ def set_mode():
     conn.commit()
     conn.close()
     return redirect(url_for("dashboard"))
+
+
 # =========================================================
 # PROVISION NUMBER (TWILIO INSIDE PRODUCT)
 # =========================================================
@@ -727,7 +828,6 @@ def provision_number():
         client = twilio_client()
 
         # Search available numbers
-        available = []
         if country == "US" and area_code:
             available = client.available_phone_numbers("US").local.list(area_code=area_code, limit=1)
         else:
@@ -741,12 +841,12 @@ def provision_number():
         # Buy number
         incoming = client.incoming_phone_numbers.create(
             phone_number=phone_number,
-            friendly_name=f"Caltora BizBot user {current_user.id}",
+            friendly_name=f"{APP_NAME} user {current_user.id}",
         )
 
-        # Configure webhooks
-        voice_url = f"{require_https_base(PUBLIC_BASE_URL)}/voice"
-        status_url = f"{require_https_base(PUBLIC_BASE_URL)}/status"
+        # Configure webhooks (ABSOLUTE URLs)
+        voice_url = absolute_url("/voice")
+        status_url = absolute_url("/status")
 
         client.incoming_phone_numbers(incoming.sid).update(
             voice_url=voice_url,
@@ -825,22 +925,21 @@ def voice():
     conn.close()
 
     sess = get_or_create_session(call_sid, user["id"])
-    # hard stop guard
     if int(sess["step_count"] or 0) > MAX_CALL_STEPS:
         vr.say("Sorry, something went wrong. Please call back later.")
         vr.hangup()
         return str(vr)
 
     greeting = user["greeting"] or template_greeting(user["business_name"], user["business_type"])
-    vr.say(greeting)
 
     gather = Gather(
         input="speech",
-        action="/handle-input",
+        action=absolute_url("/handle-input"),
         method="POST",
         speechTimeout="auto",
         timeout=7
     )
+    gather.say(greeting)
     gather.say("Please tell me what you need.")
     vr.append(gather)
 
@@ -871,6 +970,7 @@ def handle_input():
     if step_count > MAX_CALL_STEPS:
         vr.say("Sorry, something went wrong. Please call back later.")
         vr.hangup()
+        delete_session(call_sid)
         return str(vr)
 
     data = safe_json(sess["data_json"], {})
@@ -887,7 +987,13 @@ def handle_input():
     if not speech:
         bot = "Sorry, I didn’t catch that. Please repeat."
         log_call(user["id"], call_sid, to_number, from_number, stage, "", bot)
-        gather = Gather(input="speech", action="/handle-input", method="POST", speechTimeout="auto", timeout=7)
+        gather = Gather(
+            input="speech",
+            action=absolute_url("/handle-input"),
+            method="POST",
+            speechTimeout="auto",
+            timeout=7
+        )
         gather.say(bot)
         vr.append(gather)
         vr.say("Goodbye.")
@@ -902,14 +1008,24 @@ def handle_input():
             update_session(call_sid, stage="ask_name", data=data)
             bot = "Thanks. What’s your name?"
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
-            vr.say(bot)
+
+            gather = Gather(input="speech", action=absolute_url("/handle-input"), method="POST", speechTimeout="auto", timeout=7)
+            gather.say(bot)
+            vr.append(gather)
+            vr.say("Goodbye.")
+            return str(vr)
 
         elif stage == "ask_name":
             data["name"] = speech
             update_session(call_sid, stage="ask_callback", data=data)
             bot = "Thanks. What’s the best callback number?"
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
-            vr.say(bot)
+
+            gather = Gather(input="speech", action=absolute_url("/handle-input"), method="POST", speechTimeout="auto", timeout=7)
+            gather.say(bot)
+            vr.append(gather)
+            vr.say("Goodbye.")
+            return str(vr)
 
         elif stage == "ask_callback":
             data["callback"] = speech
@@ -917,13 +1033,19 @@ def handle_input():
                 update_session(call_sid, stage="ask_time", data=data)
                 bot = "Got it. What’s a good time to call you back?"
                 log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
-                vr.say(bot)
+
+                gather = Gather(input="speech", action=absolute_url("/handle-input"), method="POST", speechTimeout="auto", timeout=7)
+                gather.say(bot)
+                vr.append(gather)
+                vr.say("Goodbye.")
+                return str(vr)
             else:
                 update_session(call_sid, stage="done", data=data)
                 bot = "Perfect. We’ll get back to you soon. Goodbye."
                 log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
                 vr.say(bot)
                 vr.hangup()
+                delete_session(call_sid)
                 return str(vr)
 
         elif stage == "ask_time":
@@ -933,6 +1055,7 @@ def handle_input():
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
             vr.say(bot)
             vr.hangup()
+            delete_session(call_sid)
             return str(vr)
 
         else:
@@ -940,13 +1063,8 @@ def handle_input():
             log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
             vr.say(bot)
             vr.hangup()
+            delete_session(call_sid)
             return str(vr)
-
-        gather = Gather(input="speech", action="/handle-input", method="POST", speechTimeout="auto", timeout=7)
-        gather.say("Please respond after the tone.")
-        vr.append(gather)
-        vr.say("Goodbye.")
-        return str(vr)
 
     # =======================
     # AI MODE (OPTIONAL)
@@ -954,9 +1072,9 @@ def handle_input():
     bot = ai_reply(user["business_name"] or APP_NAME, user["faqs"] or "", speech)
     update_session(call_sid, stage="ai", data={"last_user": speech})
     log_call(user["id"], call_sid, to_number, from_number, stage, speech, bot)
-    vr.say(bot)
 
-    gather = Gather(input="speech", action="/handle-input", method="POST", speechTimeout="auto", timeout=7)
+    gather = Gather(input="speech", action=absolute_url("/handle-input"), method="POST", speechTimeout="auto", timeout=7)
+    gather.say(bot)
     gather.say("Anything else?")
     vr.append(gather)
 
