@@ -1,28 +1,90 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Privacy Policy</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Caltaura — Privacy Policy</title>
+  <style>
+    body{font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:900px;margin:0 auto;padding:34px 18px;line-height:1.7;color:#111}
+    a{color:#111}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+    .muted{color:#555}
+    h1{margin:0 0 10px;font-size:32px}
+    h2{margin-top:26px}
+    code{background:#f2f2f2;padding:2px 6px;border-radius:6px}
+    .box{background:#fafafa;border:1px solid #e5e5e5;border-radius:10px;padding:14px}
+    footer{margin-top:34px;font-size:13px;color:#666}
+  </style>
 </head>
-<body style="font-family:Arial; max-width:900px; margin:0 auto; padding:30px;">
-  <h2>Privacy Policy</h2>
+<body>
+  <div class="top">
+    <div>
+      <strong>Caltaura</strong> <span class="muted">/ Privacy Policy</span>
+    </div>
+    <div>
+      <a href="/">Home</a> · <a href="/terms">Terms</a> · <a href="/disclaimer">Disclaimer</a>
+    </div>
+  </div>
 
-  <p>Caltaura provides BizBot, an AI-assisted receptionist and business automation service.</p>
+  <h1>Privacy Policy</h1>
+  <p class="muted">Last updated: <span id="d"></span></p>
 
-  <h3>What we collect</h3>
+  <div class="box">
+    <p><b>Summary:</b> Caltaura processes call-related information to provide an AI receptionist and message capture service for businesses.</p>
+  </div>
+
+  <h2>Information we collect</h2>
   <ul>
-    <li>Account info (username, business name)</li>
-    <li>Configuration you provide (greeting, FAQs)</li>
-    <li>Call metadata and transcripts when enabled</li>
+    <li><b>Account info:</b> username, password (stored as a secure hash), and onboarding details you provide.</li>
+    <li><b>Business settings:</b> business name/type, greeting, FAQs, timezone, and optional notification email.</li>
+    <li><b>Call data:</b> caller phone number, called number, call timestamps, and speech-to-text transcript if enabled by your telephony provider.</li>
+    <li><b>Usage data:</b> basic logs for troubleshooting and security.</li>
   </ul>
 
-  <h3>How we use data</h3>
-  <p>We use this data to operate BizBot, generate responses, and display logs in your dashboard.</p>
+  <h2>How we use information</h2>
+  <ul>
+    <li>Provide the Caltaura receptionist features (answer calls, capture messages, show call logs).</li>
+    <li>Improve reliability, prevent abuse, and troubleshoot issues.</li>
+    <li>Respond to support requests and service communications.</li>
+  </ul>
 
-  <h3>Third parties</h3>
-  <p>We may use third-party providers (communications and AI providers) to deliver the service.</p>
+  <h2>AI processing</h2>
+  <p>
+    If you enable AI features, Caltaura may send limited call context (such as the caller’s request and your FAQs) to an AI provider to generate a response.
+    We instruct the AI to be concise and not invent facts.
+  </p>
 
-  <h3>Contact</h3>
-  <p>Email: support@Caltaura.com</p>
+  <h2>Sharing</h2>
+  <p>
+    Caltaura uses third-party infrastructure providers (for example, hosting and telephony) to operate the service.
+    We share only what is necessary to deliver the service.
+  </p>
+
+  <h2>Data retention</h2>
+  <p>
+    Call logs and transcripts are retained as needed to provide the service and support your business workflows.
+    You may request deletion of your account data subject to legal and operational requirements.
+  </p>
+
+  <h2>Security</h2>
+  <p>
+    We use reasonable technical and organizational measures to protect data. No method of transmission or storage is 100% secure.
+  </p>
+
+  <h2>Your responsibilities</h2>
+  <p>
+    You are responsible for ensuring your use of Caltaura complies with applicable laws (including call recording/consent rules and customer notice requirements).
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    For privacy questions, contact us via the setup form: <a href="https://forms.gle/SUzdNMqKAzGr6Ao17" target="_blank" rel="noopener">Request setup</a>.
+  </p>
+
+  <footer>© Caltaura. All rights reserved.</footer>
+
+  <script>
+    document.getElementById("d").textContent = new Date().toISOString().slice(0,10);
+  </script>
 </body>
 </html>

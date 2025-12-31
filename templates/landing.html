@@ -1,96 +1,267 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Caltaura </title> — Never Miss Another Business Call</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Caltaura — Never Miss Another Business Call</title>
+  <meta name="description" content="Caltaura is an AI receptionist that answers calls when you're busy and captures messages automatically — so you don’t lose customers." />
   <style>
-    body { font-family: Arial, sans-serif; background:#fff; color:#111; max-width:900px; margin:0 auto; padding:40px 20px; line-height:1.6; }
-    h1 { font-size:42px; margin-bottom:10px; }
-    h2 { margin-top:40px; }
-    p, ul, ol { font-size:18px; }
-    .cta { display:inline-block; margin-top:20px; padding:14px 24px; background:#000; color:#fff; text-decoration:none; font-size:18px; border-radius:6px; }
-    .box { background:#f7f7f7; padding:20px; border-radius:8px; margin-top:20px; }
-    .price { font-size:28px; font-weight:bold; }
-    footer { margin-top:60px; font-size:14px; color:#666; }
-    a { color:#111; }
+    :root{
+      --bg:#0b0b0f;
+      --card:#12121a;
+      --text:#f5f5f7;
+      --muted:#b8b8c6;
+      --line:#262635;
+      --accent:#ffffff;
+      --accent2:#9aa0ff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1a1a2c 0%, rgba(26,26,44,0) 60%),
+                  radial-gradient(900px 500px at 80% 0%, #1b2237 0%, rgba(27,34,55,0) 55%),
+                  var(--bg);
+      color:var(--text);
+      line-height:1.6;
+    }
+    a{color:inherit}
+    .wrap{max-width:980px;margin:0 auto;padding:28px 18px 60px}
+    .top{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+      padding:10px 0 24px;
+    }
+    .brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+    .logo{
+      width:34px;height:34px;border-radius:10px;
+      background: linear-gradient(145deg, #3b3bff 0%, #7a7aff 45%, #ffffff 110%);
+      box-shadow: 0 10px 25px rgba(122,122,255,.18);
+    }
+    .brand strong{letter-spacing:.4px}
+    .nav{display:flex;align-items:center;gap:10px}
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:10px 14px;border:1px solid var(--line);border-radius:999px;
+      text-decoration:none;color:var(--text);background:rgba(18,18,26,.55);
+    }
+    .pill:hover{border-color:#3a3a52}
+    .hero{
+      display:grid;
+      grid-template-columns: 1.25fr .75fr;
+      gap:18px;
+      align-items:stretch;
+      margin-top:6px;
+    }
+    @media (max-width: 860px){
+      .hero{grid-template-columns:1fr}
+    }
+    .card{
+      background: rgba(18,18,26,.72);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:22px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.25);
+    }
+    h1{margin:0 0 12px;font-size:44px;line-height:1.12}
+    @media (max-width: 520px){h1{font-size:36px}}
+    .sub{color:var(--muted);font-size:18px;margin:0 0 18px}
+    .ctaRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .cta{
+      display:inline-block;
+      padding:12px 16px;
+      border-radius:12px;
+      text-decoration:none;
+      font-weight:700;
+      border:1px solid #3a3a52;
+      background:#ffffff;
+      color:#0b0b0f;
+    }
+    .cta:hover{opacity:.92}
+    .ghost{
+      display:inline-block;
+      padding:12px 16px;
+      border-radius:12px;
+      text-decoration:none;
+      border:1px solid var(--line);
+      background:rgba(18,18,26,.55);
+      color:var(--text);
+      font-weight:600;
+    }
+    .ghost:hover{border-color:#3a3a52}
+    .mini{
+      margin-top:14px;
+      color:var(--muted);
+      font-size:14px;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:14px;
+      margin-top:18px;
+    }
+    @media (max-width: 860px){
+      .grid{grid-template-columns:1fr}
+    }
+    h2{margin:0 0 10px;font-size:22px}
+    ul{margin:10px 0 0 18px;color:var(--text)}
+    li{margin:6px 0}
+    .muted{color:var(--muted)}
+    .price{
+      font-size:30px;
+      font-weight:800;
+      margin:10px 0 6px;
+    }
+    .badge{
+      display:inline-flex;align-items:center;gap:8px;
+      font-size:13px;
+      padding:7px 10px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      background:rgba(18,18,26,.55);
+      color:var(--muted);
+    }
+    .hr{height:1px;background:var(--line);margin:18px 0}
+    footer{
+      margin-top:32px;
+      padding-top:22px;
+      border-top:1px solid var(--line);
+      color:var(--muted);
+      font-size:14px;
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+    .links a{color:var(--muted);text-decoration:none}
+    .links a:hover{color:var(--text)}
   </style>
 </head>
 <body>
+  <div class="wrap">
+    <div class="top">
+      <a class="brand" href="/">
+        <div class="logo" aria-hidden="true"></div>
+        <strong>Caltaura</strong>
+      </a>
+      <div class="nav">
+        <a class="pill" href="/login">Login</a>
+        <a class="pill" href="/register">Create account</a>
+      </div>
+    </div>
 
-<h1>Never miss another business call.</h1>
+    <div class="hero">
+      <div class="card">
+        <div class="badge">AI Receptionist · Message Capture · Call Logs</div>
+        <h1>Never miss another business call.</h1>
+        <p class="sub">
+          Caltaura is an AI receptionist that answers calls when you’re busy and captures messages automatically — so you don’t lose customers.
+        </p>
 
-<p>
-Caltaura is an AI receptionist that answers calls when you're busy and captures messages automatically — so you don’t lose customers.
-</p>
+        <div class="ctaRow">
+          <a class="cta" href="https://forms.gle/SUzdNMqKAzGr6Ao17" target="_blank" rel="noopener">Request setup</a>
+          <a class="ghost" href="/register">Try the dashboard</a>
+        </div>
 
-<a class="cta" href="https://forms.gle/SUzdNMqKAzGr6Ao17" target="_blank" rel="noopener">Request setup</a>
+        <div class="mini">
+          Beta note: We recommend starting in <b>Message Capture</b> mode (reliable), then enabling AI mode after you’re comfortable.
+        </div>
 
-<h2>The problem</h2>
-<p>You miss calls when you’re:</p>
-<ul>
-  <li>With another client</li>
-  <li>Driving or unavailable</li>
-  <li>After hours</li>
-  <li>Understaffed</li>
-</ul>
-<p>Missed calls mean <strong>lost business</strong>.</p>
+        <div class="grid">
+          <div class="card" style="padding:18px;">
+            <h2>The problem</h2>
+            <p class="muted" style="margin:0;">You miss calls when you’re:</p>
+            <ul>
+              <li>With another client</li>
+              <li>Driving or unavailable</li>
+              <li>After hours</li>
+              <li>Understaffed</li>
+            </ul>
+            <p class="muted" style="margin:10px 0 0;">Missed calls mean <b>lost business</b>.</p>
+          </div>
 
-<h2>The solution</h2>
-<p><strong>Caltaura answers your calls for you.</strong></p>
-<ul>
-  <li>Answers calls professionally</li>
-  <li>Asks what the caller needs</li>
-  <li>Captures messages or appointment requests</li>
-  <li>Logs everything in a simple dashboard</li>
-</ul>
+          <div class="card" style="padding:18px;">
+            <h2>The solution</h2>
+            <p style="margin:0;"><b>Caltaura answers your calls for you.</b></p>
+            <ul>
+              <li>Answers calls professionally</li>
+              <li>Asks what the caller needs</li>
+              <li>Captures messages or appointment requests</li>
+              <li>Logs everything in a simple dashboard</li>
+            </ul>
+          </div>
+        </div>
 
-<h2>How it works</h2>
-<ol>
-  <li>A customer calls your business</li>
-  <li>BizBot answers and takes the message</li>
-  <li>You follow up when it suits you</li>
-</ol>
+        <div class="hr"></div>
 
-<h2>What BizBot handles</h2>
-<ul>
-  <li>Missed calls</li>
-  <li>Appointment requests</li>
-  <li>Customer messages</li>
-  <li>After-hours calls</li>
-  <li>Call logs & summaries</li>
-</ul>
-<p>If BizBot isn’t sure, it takes a message instead of guessing.</p>
+        <div class="grid">
+          <div class="card" style="padding:18px;">
+            <h2>How it works</h2>
+            <ol style="margin:10px 0 0 18px;">
+              <li>A customer calls your business</li>
+              <li>BizBot answers and captures details</li>
+              <li>You follow up when it suits you</li>
+            </ol>
+          </div>
+          <div class="card" style="padding:18px;">
+            <h2>What BizBot handles</h2>
+            <ul>
+              <li>Missed calls</li>
+              <li>Appointment requests</li>
+              <li>Customer messages</li>
+              <li>After-hours calls</li>
+              <li>Call logs & summaries</li>
+            </ul>
+            <p class="muted" style="margin:10px 0 0;">If BizBot isn’t sure, it takes a message instead of guessing.</p>
+          </div>
+        </div>
+      </div>
 
-<h2>Who this is for</h2>
-<p>Caltaura is built for service businesses:</p>
-<ul>
-  <li>Clinics & medical practices</li>
-  <li>Salons & barbers</li>
-  <li>Repair shops</li>
-  <li>Consultants & solo professionals</li>
-</ul>
+      <div class="card">
+        <h2>Who this is for</h2>
+        <p class="muted" style="margin:0 0 10px;">
+          Caltaura is built for service businesses:
+        </p>
+        <ul>
+          <li>Clinics & medical practices</li>
+          <li>Salons & barbers</li>
+          <li>Repair shops</li>
+          <li>Consultants & solo professionals</li>
+        </ul>
 
-<h2>Pricing (early access)</h2>
-<div class="box">
-  <p class="price">$99 setup + $29/month</p>
-  <ul>
-    <li>AI receptionist setup</li>
-    <li>24/7 call answering</li>
-    <li>Message & appointment capture</li>
-    <li>Dashboard access</li>
-    <li>Ongoing support</li>
-  </ul>
-</div>
+        <div class="hr"></div>
 
-<h2>Get early access</h2>
-<p>We’re onboarding a limited number of early businesses.</p>
-<a class="cta" href="https://forms.gle/SUzdNMqKAzGr6Ao17" target="_blank" rel="noopener">Request setup</a>
+        <h2>Pricing (early access)</h2>
+        <div class="price">$99 setup + $29/month</div>
+        <ul>
+          <li>AI receptionist setup</li>
+          <li>24/7 call answering</li>
+          <li>Message & appointment capture</li>
+          <li>Dashboard access</li>
+          <li>Ongoing support</li>
+        </ul>
 
-<footer>
-  © Caltaura. All rights reserved.<br><br>
-  <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/disclaimer">Disclaimer</a>
-</footer>
+        <div class="hr"></div>
 
+        <h2>Get early access</h2>
+        <p class="muted" style="margin:0 0 12px;">
+          We’re onboarding a limited number of early businesses.
+        </p>
+        <a class="cta" href="https://forms.gle/SUzdNMqKAzGr6Ao17" target="_blank" rel="noopener">Request setup</a>
+
+        <p class="mini">
+          Questions? Use the form and we’ll reply by email.
+        </p>
+      </div>
+    </div>
+
+    <footer>
+      <div>© Caltaura. All rights reserved.</div>
+      <div class="links">
+        <a href="/privacy">Privacy</a> ·
+        <a href="/terms">Terms</a> ·
+        <a href="/disclaimer">Disclaimer</a>
+      </div>
+    </footer>
+  </div>
 </body>
 </html>
