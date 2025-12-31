@@ -26,7 +26,7 @@ except Exception:
 # =========================================================
 # CONFIG (Render env vars)
 # =========================================================
-APP_NAME = os.getenv("APP_NAME", "Optenor BizBot")
+APP_NAME = os.getenv("APP_NAME", "Caltaura BizBot")
 DB_PATH = os.getenv("DB_PATH", "database.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-me")
 
@@ -479,7 +479,7 @@ def home():
 def terms():
     return render_template_string("""
     <h2>Terms</h2>
-    <p>Optenor BizBot is provided on an early-access basis.</p>
+    <p>Caltaura BizBot is provided on an early-access basis.</p>
     <p>You are responsible for complying with applicable laws, including any call recording, consent, and disclosure requirements in your jurisdiction.</p>
     <p>Service features may change during beta.</p>
     """)
@@ -694,7 +694,7 @@ def dashboard():
 
         <hr>
 
-        <h3>One-click number activation (Twilio inside Optenor)</h3>
+        <h3>One-click number activation (Twilio inside Caltaura)</h3>
         <p><b>Provisioning enabled:</b> {{provisioning_enabled}}</p>
 
         {% if not u.bizbot_number %}
